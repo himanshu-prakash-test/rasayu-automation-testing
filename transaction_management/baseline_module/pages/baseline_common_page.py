@@ -1,3 +1,4 @@
+import re
 from typing import Optional, List, Dict, Any
 from playwright.sync_api import Page, Locator, expect
 
@@ -28,6 +29,8 @@ logger = get_logger("BaselineCommonPage")
 
 class BaselinePage(BasePage):
     """Unified Page Object coordinating all sections of the Baseline Visit module."""
+
+    _cached_editable_patient_id: Optional[str] = None
 
     def __init__(self, page: Page):
         super().__init__(page, context_name="BaselinePage")
@@ -70,38 +73,120 @@ class BaselinePage(BasePage):
     def error_banner(self) -> Locator:
         return self.page.locator("p.errornote, .alert-danger, ul.grp-messagelist li.grp-error, .ant-alert-error, .ant-message-error, .ant-form-item-explain-error")
 
-    def open_baseline_workspace(self, patient_id: Optional[str] = None) -> None:
-        """Navigates to the patient directory, searches for the patient, and loads the profile."""
-        if not patient_id:
-            try:
-                from transaction_management.baseline_module.baseline_data import get_target_patient_id
-                patient_id = get_target_patient_id("TC-BASE-CREATE-POS-01")
-            except Exception:
-                patient_id = "220261122"
+    def is_patient_view_only(self) -> bool:
+        """
+        Detects whether the loaded patient workspace is View Only (deceased / read-only).
+        Checks for .baseline-view-only-badge, 'View Only' text, or absence of active Save buttons.
+        """
+        if self.page.locator(".baseline-view-only-badge").first.is_visible():
+            return True
+        if self.page.locator("text='View Only'").first.is_visible():
+            return True
+        if not self.save_button.is_visible() and not self.save_and_next_button.is_visible():
+            return True
+        return False
 
-        self.logger.info(f"Loading Baseline workspace for patient ID: '{patient_id}'")
+    def open_baseline_workspace(self, patient_id: Optional[str] = None) -> str:
+        """
+        Loads the Baseline workspace for an active, editable patient (ViewOnly=False).
+        If a candidate patient_id is provided, verifies if it is editable.
+        If the candidate has 'View Only' (deceased/read-only) or is unspecified,
+        dynamically searches the Patient List to choose the first active, editable patient
+        so that CRUD operations (Create, Read, Update, Delete) succeed without read-only restrictions.
+        """
+        # If already on an editable patient workspace matching the requested/cached ID:
+        target_id = patient_id or BaselinePage._cached_editable_patient_id
+        if target_id and (target_id in self.page.url or f"/patients/{target_id}" in self.page.url):
+            if self.baseline_tab.is_visible():
+                self.safe_click(self.baseline_tab, "Baseline Clinical Tab")
+            if not self.is_patient_view_only():
+                return target_id
 
-        # Ensure we are on patient list view
+        # If a candidate ID was provided, test if that patient is editable
+        if patient_id:
+            self._ensure_on_patients_list()
+            self.patient_search.search_patient(patient_id)
+            if self.page.locator(f"tr.ant-table-row:has-text('{patient_id}')").first.is_visible():
+                self.patient_search.open_patient_record(patient_id)
+                if self.baseline_tab.is_visible():
+                    self.safe_click(self.baseline_tab, "Baseline Clinical Tab")
+                    self.page.wait_for_timeout(250)
+
+                if not self.is_patient_view_only():
+                    self.logger.info(f"Target patient '{patient_id}' is verified EDITABLE (CanSave=True, ViewOnly=False).")
+                    BaselinePage._cached_editable_patient_id = patient_id
+                    return patient_id
+                else:
+                    self.logger.warning(
+                        f"Target patient '{patient_id}' has 'View Only' status (deceased/dead). "
+                        "Dynamically choosing an active editable patient from directory..."
+                    )
+
+        # Dynamic Selection: scan Patient List for first non-view-only, editable patient
+        self._ensure_on_patients_list()
+        selected_id = self._select_first_editable_patient()
+        BaselinePage._cached_editable_patient_id = selected_id
+        return selected_id
+
+    def _ensure_on_patients_list(self) -> None:
+        """Navigates to the patient list view."""
+        patients_url = f"{config.main_app_url.rstrip('/')}/patients"
         if "/patients" in self.page.url and not self.page.url.endswith("/patients") and not self.page.url.endswith("/patients/"):
-            patients_nav = self.page.locator("a[title='Patients'], a[href='/patients']").first
+            patients_nav = self.page.locator("a[title='Back to patient list'], a[title='Patients'], a[href='/patients']").first
             if patients_nav.is_visible():
                 patients_nav.click()
                 self.page.wait_for_timeout(300)
-        elif "/patients" not in self.page.url:
-            patients_nav = self.page.locator("a[title='Patients'], a[href='/patients']").first
-            if patients_nav.is_visible():
-                patients_nav.click()
             else:
-                patients_url = f"{config.main_app_url.rstrip('/')}/patients"
                 self.page.goto(patients_url, wait_until="domcontentloaded")
-            self.page.wait_for_timeout(300)
+        elif "/patients" not in self.page.url:
+            self.page.goto(patients_url, wait_until="domcontentloaded")
 
-        self.patient_search.search_patient(patient_id)
-        self.patient_search.open_patient_record(patient_id)
+        try:
+            self.page.wait_for_selector(".ant-table-row", timeout=15000)
+        except Exception:
+            pass
 
-        if self.baseline_tab.is_visible():
-            self.safe_click(self.baseline_tab, "Baseline Clinical Tab")
-            self.page.wait_for_timeout(250)
+    def _select_first_editable_patient(self) -> str:
+        """
+        Scans patient table rows on /patients, opens each candidate,
+        and selects the first one that does NOT have the 'View Only' badge
+        and has active Save baseline buttons.
+        """
+        self.logger.info("Scanning Patient List for an active editable patient (ViewOnly=False)...")
+        rows = self.page.locator(".ant-table-tbody tr.ant-table-row")
+        row_count = rows.count()
+
+        for idx in range(row_count):
+            self._ensure_on_patients_list()
+            row = self.page.locator(".ant-table-tbody tr.ant-table-row").nth(idx)
+
+            raw_id = row.locator("td").first.inner_text().strip()
+            clean_id = re.sub(r"^[A-Z]-", "", raw_id.split()[0]) if raw_id else ""
+            if not clean_id or clean_id == "—":
+                name_cell = row.locator("td").nth(1).inner_text().replace("\n", " ")
+                clean_id = name_cell.split()[0] if name_cell else str(idx)
+
+            self.logger.info(f"Checking candidate patient row [{idx}]: ID='{clean_id}'...")
+            row.click()
+            self.page.wait_for_timeout(800)
+
+            try:
+                self.page.wait_for_selector(".ant-skeleton, .ant-spin-spinning", state="detached", timeout=8000)
+            except Exception:
+                pass
+
+            if self.baseline_tab.is_visible():
+                self.safe_click(self.baseline_tab, "Baseline Clinical Tab")
+                self.page.wait_for_timeout(250)
+
+            if not self.is_patient_view_only():
+                self.logger.info(f"SUCCESS: Dynamically selected active editable patient '{clean_id}' at row {idx}!")
+                return clean_id
+            else:
+                self.logger.info(f"Row {idx} ('{clean_id}') is View Only (deceased). Checking next patient...")
+
+        self.logger.warning("No non-view-only patient discovered in initial scan; defaulting to 220261122.")
+        return "220261122"
 
     def switch_subtab(self, tab_name: str) -> None:
         """Switches to the requested clinical sub-tab."""
