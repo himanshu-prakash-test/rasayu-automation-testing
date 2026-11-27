@@ -102,6 +102,31 @@ def pytest_sessionstart(session):
     clear_screenshots_folder(screenshots_dir)
 
 
+def pytest_collection_modifyitems(session, config, items):
+    """
+    Orders test execution so that positive test suites run first,
+    followed by negative test suites.
+    Ensures happy-path baseline data setup and quick functional checks
+    execute upfront, followed by boundary/negative error validation.
+    """
+    positive_items = []
+    negative_items = []
+
+    for item in items:
+        # Check marker or filename for negative classification
+        is_neg = (
+            item.get_closest_marker("negative") is not None
+            or "_neg" in item.nodeid
+            or "neg" in item.name.lower()
+        )
+        if is_neg:
+            negative_items.append(item)
+        else:
+            positive_items.append(item)
+
+    items[:] = positive_items + negative_items
+
+
 @pytest.fixture(scope="session")
 def playwright_instance():
     """Initializes Playwright engine."""
