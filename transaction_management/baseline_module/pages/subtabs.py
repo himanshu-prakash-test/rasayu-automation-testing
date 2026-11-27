@@ -1,6 +1,9 @@
 from typing import Optional, Dict
 from playwright.sync_api import Page, Locator, expect
-from base.base_page import BasePage
+try:
+    from shared_tools.base.base_page import BasePage
+except ImportError:
+    from base.base_page import BasePage
 
 
 class DemographicsSubTab(BasePage):

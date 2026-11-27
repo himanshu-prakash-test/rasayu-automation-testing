@@ -1,6 +1,9 @@
 from typing import Optional
 from playwright.sync_api import Page, Locator, expect
-from base.base_page import BasePage
+try:
+    from shared_tools.base.base_page import BasePage
+except ImportError:
+    from base.base_page import BasePage
 from .patient_search import PatientSearchSection
 from .subtabs import (
     DemographicsSubTab,
@@ -27,12 +30,12 @@ class BaselinePage(BasePage):
 
     @property
     def baseline_tab(self) -> Locator:
-        return self.page.locator("a:has-text('Baseline'), .nav-tabs a[href*='baseline'], #baseline-tab")
+        return self.page.locator("button:has-text('Baseline'), a:has-text('Baseline'), .nav-tabs a[href*='baseline'], #baseline-tab").first
 
     @property
     def save_button(self) -> Locator:
         return self.page.locator(
-            "input[type='submit'][name='_save'], input[value='Save'], button:has-text('Save Baseline')"
+            "button:has-text('Save baseline'), button:has-text('Save'), input[type='submit'][name='_save'], input[value='Save']"
         ).first
 
     @property
@@ -41,34 +44,80 @@ class BaselinePage(BasePage):
 
     @property
     def error_banner(self) -> Locator:
-        return self.page.locator("p.errornote, .alert-danger, ul.grp-messagelist li.grp-error")
+        return self.page.locator("p.errornote, .alert-danger, ul.grp-messagelist li.grp-error, .ant-alert-error, .ant-message-error")
 
     def open_baseline_workspace(self, patient_id: Optional[str] = None) -> None:
         """Navigates to the patient directory, searches for the patient, and loads the profile."""
         if not patient_id:
-            from baseline_data import get_default_patient_id
+            try:
+                from transaction_management.baseline_module.baseline_data import get_default_patient_id
+            except ImportError:
+                from baseline_data import get_default_patient_id
             patient_id = get_default_patient_id()
         self.logger.info(f"Loading Baseline workspace for patient ID: '{patient_id}'")
-        self.navigate_to("/admin/crf/patient/")
+        
+        # Ensure we are on patient list view
+        if "/patients" in self.page.url and not self.page.url.endswith("/patients") and not self.page.url.endswith("/patients/"):
+            patients_nav = self.page.locator("a[title='Patients'], a[href='/patients']").first
+            if patients_nav.is_visible():
+                patients_nav.click()
+                self.page.wait_for_timeout(1000)
+        elif "/patients" not in self.page.url:
+            patients_nav = self.page.locator("a[title='Patients'], a[href='/patients']").first
+            if patients_nav.is_visible():
+                patients_nav.click()
+            else:
+                from utils.env_config import config
+                patients_url = f"{config.main_app_url.rstrip('/')}/patients"
+                self.page.goto(patients_url, wait_until="domcontentloaded")
+            self.page.wait_for_timeout(1000)
+
         self.patient_search.search_patient(patient_id)
         self.patient_search.open_patient_record(patient_id)
 
+        # Ensure workspace skeleton is gone
+        try:
+            self.page.wait_for_selector(".ant-skeleton, .ant-spin-spinning", state="detached", timeout=25000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(1000)
+
         if self.baseline_tab.is_visible():
             self.safe_click(self.baseline_tab, "Baseline Clinical Tab")
+            self.page.wait_for_timeout(500)
 
     def switch_subtab(self, tab_name: str) -> None:
         """Switches to the requested clinical sub-tab."""
         self.logger.info(f"Switching to sub-tab: '{tab_name}'")
-        tab = self.page.locator(f"a:has-text('{tab_name}'), button:has-text('{tab_name}')").first
-        if tab.is_visible():
-            self.safe_click(tab, f"Sub-tab ({tab_name})")
-            self.page.wait_for_timeout(300)
-        else:
+        try:
+            self.page.wait_for_selector(".ant-skeleton", state="detached", timeout=10000)
+        except Exception:
+            pass
+
+        variations = [tab_name]
+        if "&" in tab_name:
+            variations.append(tab_name.replace("&", "and"))
+        elif " and " in tab_name:
+            variations.append(tab_name.replace(" and ", " & "))
+
+        tab_found = False
+        for v in variations:
+            tab = self.page.locator(
+                f"button:has-text('{v}'), a:has-text('{v}'), div[role='tab']:has-text('{v}')"
+            ).first
+            if tab.is_visible():
+                self.safe_click(tab, f"Sub-tab ({v})")
+                self.page.wait_for_timeout(600)
+                tab_found = True
+                break
+
+        if not tab_found:
             section = self.page.locator(
-                f"fieldset:has-text('{tab_name}'), h2:has-text('{tab_name}'), h3:has-text('{tab_name}')"
+                f"fieldset:has-text('{tab_name}'), h2:has-text('{tab_name}'), h3:has-text('{tab_name}'), .ant-collapse-header:has-text('{tab_name}')"
             ).first
             if section.is_visible():
                 section.scroll_into_view_if_needed()
+                self.page.wait_for_timeout(400)
 
     def save_baseline_form(self) -> None:
         """Triggers the form save execution."""
