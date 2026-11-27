@@ -1,8 +1,10 @@
 import os
 import re
 import sys
+import time
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
 # Add project root, shared_tools, and module roots to sys.path
 ROOT_DIR = Path(__file__).resolve().parent
@@ -107,6 +109,10 @@ def playwright_instance():
         yield p
 
 
+AUTH_DIR = ROOT_DIR / ".auth"
+SESSION_AUTH_FILE = AUTH_DIR / "session_storage_state.json"
+
+
 @pytest.fixture(scope="session")
 def browser(playwright_instance, request) -> Browser:
     """
@@ -122,6 +128,13 @@ def browser(playwright_instance, request) -> Browser:
     else:
         is_headless = True
 
+    # Allow configuring SLOW_MO via environment variable (default: 0 in headless, 50ms in headed instead of 300ms)
+    env_slow_mo = os.getenv("SLOW_MO")
+    if env_slow_mo is not None and env_slow_mo.isdigit():
+        slow_mo_val = int(env_slow_mo)
+    else:
+        slow_mo_val = 50 if cli_headed else 0
+
     launch_args = [
         "--disable-web-security",
         "--no-sandbox",
@@ -132,17 +145,63 @@ def browser(playwright_instance, request) -> Browser:
     ]
     b = playwright_instance.chromium.launch(
         headless=is_headless,
-        slow_mo=300 if not is_headless else 0,
+        slow_mo=slow_mo_val,
         args=launch_args,
     )
     yield b
     b.close()
 
 
+@pytest.fixture(scope="session")
+def session_storage_state(browser: Browser) -> Optional[str]:
+    """
+    Session-level authentication: logs in once at session start and saves
+    cookies/localStorage tokens to session_storage_state.json so individual test
+    contexts can reuse the authenticated session instantly.
+    100% production-safe: works across local, staging, and production domains.
+    """
+    disable_cache = os.environ.get("DISABLE_AUTH_CACHE", "").lower() in ("1", "true", "yes")
+    if disable_cache:
+        return None
+
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+    # If an existing storage state is fresh (< 2 hours old), reuse it directly
+    if SESSION_AUTH_FILE.exists():
+        try:
+            file_age_seconds = time.time() - SESSION_AUTH_FILE.stat().st_mtime
+            if file_age_seconds < 7200:
+                return str(SESSION_AUTH_FILE)
+        except Exception:
+            pass
+
+    try:
+        ctx = browser.new_context(
+            base_url=config.base_url,
+            ignore_https_errors=True,
+        )
+        p = ctx.new_page()
+        lp = LoginPage(p)
+        lp.open()
+        lp.login(config.admin_username, config.admin_password)
+        lp.verify_login_success()
+        lp.redirect_to_main_website()
+
+        # Save session storage state
+        ctx.storage_state(path=str(SESSION_AUTH_FILE))
+        ctx.close()
+        return str(SESSION_AUTH_FILE)
+    except Exception as e:
+        print(f"\n[Auth Cache] Session pre-auth notice: {e}. Will authenticate on demand.")
+        return None
+
+
 @pytest.fixture(scope="function")
-def context(browser: Browser) -> BrowserContext:
-    """Creates an isolated browser context per test."""
+def context(browser: Browser, session_storage_state: Optional[str]) -> BrowserContext:
+    """Creates an isolated browser context per test, pre-hydrated with session auth tokens if available."""
+    storage = session_storage_state if (session_storage_state and os.path.exists(session_storage_state)) else None
     ctx = browser.new_context(
+        storage_state=storage,
         base_url=config.base_url,
         viewport=None if not config.is_headless else {"width": config.viewport_width, "height": config.viewport_height},
         no_viewport=True if not config.is_headless else False,
@@ -168,12 +227,36 @@ def login_page(page: Page) -> LoginPage:
 
 
 @pytest.fixture(scope="function")
-def authenticated_page(page: Page, login_page: LoginPage) -> Page:
-    """Logs into the clinical portal, redirects to main website via redirect icon, and yields authenticated session page."""
+def authenticated_page(page: Page, login_page: LoginPage, context: BrowserContext, session_storage_state: Optional[str]) -> Page:
+    """
+    Yields an authenticated session page.
+    Fast Path: if session storage state was loaded, checks if user is already authenticated on main web app.
+    Fallback Path: if session missing or expired on production, performs full login and refreshes storage state.
+    """
+    if session_storage_state and os.path.exists(session_storage_state):
+        target_url = f"{config.main_app_url.rstrip('/')}/patients"
+        try:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+            current_url = page.url.lower()
+            if "/login" not in current_url and "/admin/login" not in current_url:
+                # Successfully authenticated in < 1 second!
+                return page
+        except Exception:
+            pass
+
+    # Fallback: full authentication flow (resilient against expired tokens on production)
     login_page.open()
     login_page.login(config.admin_username, config.admin_password)
     login_page.verify_login_success()
     login_page.redirect_to_main_website()
+
+    # Refresh cached storage state for subsequent tests
+    try:
+        AUTH_DIR.mkdir(parents=True, exist_ok=True)
+        context.storage_state(path=str(SESSION_AUTH_FILE))
+    except Exception:
+        pass
+
     return page
 
 

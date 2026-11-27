@@ -27,7 +27,7 @@ class PatientSearchSection(BasePage):
         self.logger.info(f"Searching for patient: '{query}'")
         self.safe_fill(self.search_input, query, "Patient Searchbar")
         self.search_input.press("Enter")
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(300)
 
     def verify_search_result_contains(self, patient_identifier: str) -> None:
         """Asserts that the result table contains the given patient record."""
@@ -49,10 +49,10 @@ class PatientSearchSection(BasePage):
         # Wait for patient clinical workspace to load and skeleton placeholders to detach
         self.logger.info(f"Waiting for patient workspace ({patient_identifier}) to fully render...")
         try:
-            self.page.wait_for_selector(".ant-skeleton, .ant-spin-spinning", state="detached", timeout=25000)
+            self.page.wait_for_selector(".ant-skeleton, .ant-spin-spinning", state="detached", timeout=15000)
         except Exception:
             pass
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(300)
 
     def verify_demographics(
         self,

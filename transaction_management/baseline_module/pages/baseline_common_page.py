@@ -86,7 +86,7 @@ class BaselinePage(BasePage):
             patients_nav = self.page.locator("a[title='Patients'], a[href='/patients']").first
             if patients_nav.is_visible():
                 patients_nav.click()
-                self.page.wait_for_timeout(1000)
+                self.page.wait_for_timeout(300)
         elif "/patients" not in self.page.url:
             patients_nav = self.page.locator("a[title='Patients'], a[href='/patients']").first
             if patients_nav.is_visible():
@@ -94,27 +94,20 @@ class BaselinePage(BasePage):
             else:
                 patients_url = f"{config.main_app_url.rstrip('/')}/patients"
                 self.page.goto(patients_url, wait_until="domcontentloaded")
-            self.page.wait_for_timeout(1000)
+            self.page.wait_for_timeout(300)
 
         self.patient_search.search_patient(patient_id)
         self.patient_search.open_patient_record(patient_id)
 
-        # Ensure workspace skeleton is gone
-        try:
-            self.page.wait_for_selector(".ant-skeleton, .ant-spin-spinning", state="detached", timeout=25000)
-        except Exception:
-            pass
-        self.page.wait_for_timeout(1000)
-
         if self.baseline_tab.is_visible():
             self.safe_click(self.baseline_tab, "Baseline Clinical Tab")
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(250)
 
     def switch_subtab(self, tab_name: str) -> None:
         """Switches to the requested clinical sub-tab."""
         self.logger.info(f"Switching to sub-tab: '{tab_name}'")
         try:
-            self.page.wait_for_selector(".ant-skeleton", state="detached", timeout=10000)
+            self.page.wait_for_selector(".ant-skeleton", state="detached", timeout=5000)
         except Exception:
             pass
 
@@ -128,36 +121,39 @@ class BaselinePage(BasePage):
             tab = self.page.locator(f".ant-tabs-tab:has-text('{v}'), button:has-text('{v}')").first
             if tab.is_visible():
                 tab.click()
-                self.page.wait_for_timeout(800)
+                self.page.wait_for_timeout(250)
                 return
 
     def save_baseline(self) -> None:
         """Clicks Save baseline button."""
         self.logger.info("Clicking 'Save baseline'...")
         self.safe_click(self.save_button, "Save baseline button")
-        self.page.wait_for_timeout(1500)
+        self.page.wait_for_timeout(500)
 
     def save_and_next(self) -> None:
         """Clicks Save and Next button."""
         self.logger.info("Clicking 'Save and Next'...")
         self.safe_click(self.save_and_next_button, "Save and Next button")
-        self.page.wait_for_timeout(1500)
+        self.page.wait_for_timeout(500)
 
     def click_visit(self) -> None:
         """Clicks Visit button."""
         self.logger.info("Clicking 'Visit'...")
         self.safe_click(self.visit_button, "Visit button")
-        self.page.wait_for_timeout(1500)
+        self.page.wait_for_timeout(500)
 
     def open_history(self) -> None:
         """Opens History modal."""
         self.logger.info("Opening History modal...")
         self.safe_click(self.history_button, "History button")
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(400)
 
     def close_history(self) -> None:
         """Closes History modal."""
         close_btn = self.page.locator(".ant-modal-close, button:has-text('Close')").first
+        if close_btn.is_visible():
+            close_btn.click()
+            self.page.wait_for_timeout(250)
         if close_btn.is_visible():
             close_btn.click()
             self.page.wait_for_timeout(500)
@@ -229,6 +225,6 @@ class BaselinePage(BasePage):
         err = self.page.locator(
             ".ant-form-item-explain-error, .ant-message-error, .ant-notification-notice-error, p.errornote, .ant-alert-error"
         ).first
-        expect(err).to_be_visible(timeout=10000)
+        expect(err).to_be_visible(timeout=5000)
         if expected_message:
             self.logger.info(f"Verified error text contains: '{expected_message}'")

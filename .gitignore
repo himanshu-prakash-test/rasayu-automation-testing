@@ -41,6 +41,8 @@ pytest-report.html
 reports/
 
 # Playwright artifacts
+.auth/
+*.storage_state.json
 test-results/
 playwright-report/
 blob-report/
