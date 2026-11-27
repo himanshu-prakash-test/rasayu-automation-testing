@@ -4,31 +4,54 @@ import sys
 import webbrowser
 from pathlib import Path
 
-# Add project root, shared-tools, and module roots to sys.path
+# Add project root, shared_tools, and module roots to sys.path
 ROOT_DIR = Path(__file__).resolve().parent
-SHARED_TOOLS_DIR = ROOT_DIR / "shared-tools"
-BASELINE_MODULE_DIR = ROOT_DIR / "transaction-management" / "update" / "baseline-module"
+SHARED_TOOLS_DIR = ROOT_DIR / "shared_tools"
+TEST_DATA_DIR = ROOT_DIR / "test_data"
+MASTER_MGMT_DIR = ROOT_DIR / "master_management"
+TRANS_MGMT_DIR = ROOT_DIR / "transaction_management"
 
-for p in (str(ROOT_DIR), str(SHARED_TOOLS_DIR), str(BASELINE_MODULE_DIR)):
+for p in (
+    str(ROOT_DIR),
+    str(SHARED_TOOLS_DIR),
+    str(TEST_DATA_DIR),
+    str(MASTER_MGMT_DIR),
+    str(TRANS_MGMT_DIR),
+):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 import pytest
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 
-from utils.env_config import config
-from auth.login_page import LoginPage
-from components.navigation_menu import NavigationMenu
-from popup.modal_handler import ModalDialogHandler
-from popup.toast_handler import ToastHandler
-from popup.confirmation_popup import ConfirmationPopup
-from popup.summary_popup import show_summary_popup
-from reporter import PytestReporterPlugin
-from utils.screenshot_manager import (
-    capture_test_screenshot,
-    get_page_from_item,
-    clear_screenshots_folder,
-)
+try:
+    from shared_tools.utils.env_config import config
+    from shared_tools.auth.login_page import LoginPage
+    from shared_tools.components.navigation_menu import NavigationMenu
+    from shared_tools.popup.modal_handler import ModalDialogHandler
+    from shared_tools.popup.toast_handler import ToastHandler
+    from shared_tools.popup.confirmation_popup import ConfirmationPopup
+    from shared_tools.popup.summary_popup import show_summary_popup
+    from shared_tools.reporter import PytestReporterPlugin
+    from shared_tools.utils.screenshot_manager import (
+        capture_test_screenshot,
+        get_page_from_item,
+        clear_screenshots_folder,
+    )
+except ImportError:
+    from utils.env_config import config
+    from auth.login_page import LoginPage
+    from components.navigation_menu import NavigationMenu
+    from popup.modal_handler import ModalDialogHandler
+    from popup.toast_handler import ToastHandler
+    from popup.confirmation_popup import ConfirmationPopup
+    from popup.summary_popup import show_summary_popup
+    from reporter import PytestReporterPlugin
+    from utils.screenshot_manager import (
+        capture_test_screenshot,
+        get_page_from_item,
+        clear_screenshots_folder,
+    )
 
 # Global session reporter plugin instance
 reporter_plugin = PytestReporterPlugin(suite_title="Rasayu Clinical Portal Automation")
@@ -146,10 +169,11 @@ def login_page(page: Page) -> LoginPage:
 
 @pytest.fixture(scope="function")
 def authenticated_page(page: Page, login_page: LoginPage) -> Page:
-    """Logs into the clinical portal and yields an authenticated session page."""
+    """Logs into the clinical portal, redirects to main website via redirect icon, and yields authenticated session page."""
     login_page.open()
     login_page.login(config.admin_username, config.admin_password)
     login_page.verify_login_success()
+    login_page.redirect_to_main_website()
     return page
 
 
@@ -207,7 +231,12 @@ def pytest_runtest_makereport(item, call):
         )
 
 
-def _display_summary_popup(config, was_interrupted: bool = False):
+def pytest_keyboard_interrupt(excinfo):
+    """Mark session as interrupted when user stops execution via Ctrl+C."""
+    os.environ["_PYTEST_INTERRUPTED"] = "1"
+
+
+def _display_summary_popup(config, terminalreporter=None, was_interrupted: bool = False):
     """
     Displays the styled execution summary popup window upon test completion or early termination.
     Guarded to run only once per session.
@@ -219,22 +248,47 @@ def _display_summary_popup(config, was_interrupted: bool = False):
     if getattr(config.option, "collectonly", False):
         return
 
-    results = reporter_plugin.reporter.results
-    total = len(results)
+    # In remote headless CI/CD runners (e.g. GitHub Actions, headless Linux), skip GUI popup to prevent runner hang.
+    # On local Windows/macOS developer workstations, show the desktop summary popup.
+    force_popup = os.environ.get("FORCE_POPUP", "").strip().lower() in ("1", "true", "yes")
+    is_github_actions = os.environ.get("GITHUB_ACTIONS", "").strip().lower() in ("true", "1")
+    is_headless_linux = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
 
-    # If no tests were run and execution was not terminated, skip popup
-    if total == 0 and not was_interrupted:
+    if (is_github_actions or is_headless_linux) and not force_popup:
+        print(f"\n[CI/CD] Remote headless environment detected. Summary popup bypassed.")
         return
 
-    # Finalize rich Playwright HTML report
-    try:
-        report_file = reporter_plugin.finalize_report(filename_prefix="rasayu_clinical_report")
-    except Exception:
-        report_file = str(Path("reports/latest_report.html").resolve())
+    # Check if interrupted via keyboard (Ctrl+C)
+    if os.environ.pop("_PYTEST_INTERRUPTED", None) == "1":
+        was_interrupted = True
 
+    results = list(getattr(reporter_plugin.reporter, "results", []))
     passed = sum(1 for r in results if "PASS" in r.status.upper())
     failed = sum(1 for r in results if "FAIL" in r.status.upper())
     skipped = sum(1 for r in results if "SKIP" in r.status.upper())
+
+    # Fallback to terminalreporter stats if custom reporter was interrupted before recording
+    term = terminalreporter or getattr(config, "_terminalreporter", None)
+    if term and hasattr(term, "stats"):
+        term_passed = len([r for r in term.stats.get("passed", []) if getattr(r, "when", "") == "call"])
+        term_failed = len([r for r in term.stats.get("failed", []) + term.stats.get("error", []) if getattr(r, "when", "") in ("call", "setup")])
+        term_skipped = len([r for r in term.stats.get("skipped", []) if getattr(r, "when", "") in ("call", "setup")])
+        if (term_passed + term_failed + term_skipped) > len(results):
+            passed = max(passed, term_passed)
+            failed = max(failed, term_failed)
+            skipped = max(skipped, term_skipped)
+
+    total = len(results)
+    if total < (passed + failed + skipped):
+        total = passed + failed + skipped
+
+    failed_tests = [r.name for r in results if "FAIL" in r.status.upper()]
+    if was_interrupted:
+        failed_tests.append("Execution Stopped / Interrupted by User")
+
+    # If 0 tests completed but user stopped execution, report total as 1 (interrupted test)
+    if total == 0 and was_interrupted:
+        total = 1
 
     try:
         summary = reporter_plugin.reporter.compile_summary()
@@ -242,28 +296,34 @@ def _display_summary_popup(config, was_interrupted: bool = False):
     except Exception:
         duration_str = "0s"
 
-    failed_tests = [r.name for r in results if "FAIL" in r.status.upper()]
-    if was_interrupted:
-        failed_tests.append("Session Terminated / Interrupted by User")
+    # Finalize rich Playwright HTML report
+    try:
+        report_file = reporter_plugin.finalize_report(filename_prefix="rasayu_clinical_report")
+    except Exception:
+        report_file = str(Path("reports/latest_report.html").resolve())
 
     # Display styled desktop summary popup (HTML report opens when user clicks '🌐 View HTML Report')
-    show_summary_popup(
-        total=total,
-        passed=passed,
-        failed=failed,
-        skipped=skipped,
-        duration_str=duration_str,
-        failed_tests=failed_tests,
-        suite_title="RASAYU CLINICAL PORTAL AUTOMATION",
-        report_path=report_file,
-    )
+    try:
+        show_summary_popup(
+            total=total,
+            passed=passed,
+            failed=failed,
+            skipped=skipped,
+            duration_str=duration_str,
+            failed_tests=failed_tests,
+            suite_title="RASAYU CLINICAL PORTAL AUTOMATION",
+            report_path=report_file,
+        )
+    except BaseException as exc:
+        print(f"\n[POPUP] Execution popup finished or closed ({exc}).")
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Triggered upon normal test session summary completion."""
-    was_interrupted = exitstatus in (2, 3)  # ExitCode.INTERRUPTED = 2
-    _display_summary_popup(config, was_interrupted=was_interrupted)
+    """Triggered upon normal or early test session summary completion."""
+    config._terminalreporter = terminalreporter
+    was_interrupted = exitstatus in (1, 2, 3) or getattr(terminalreporter, "interrupted", False) or os.environ.get("_PYTEST_INTERRUPTED") == "1"
+    _display_summary_popup(config, terminalreporter=terminalreporter, was_interrupted=was_interrupted)
 
 
 def pytest_unconfigure(config):
@@ -271,7 +331,8 @@ def pytest_unconfigure(config):
     Guaranteed teardown hook: ensures summary popup displays even if the user
     abruptly terminates the test run early (Ctrl+C, SIGINT, or system kill).
     """
-    _display_summary_popup(config, was_interrupted=True)
+    was_interrupted = os.environ.get("_PYTEST_INTERRUPTED") == "1" or getattr(config, "_interrupted_by_user", False)
+    _display_summary_popup(config, was_interrupted=was_interrupted)
 
 
 

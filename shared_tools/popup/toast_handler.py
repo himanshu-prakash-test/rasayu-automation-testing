@@ -1,6 +1,9 @@
 from typing import List, Optional
 from playwright.sync_api import Page, Locator, expect
-from utils.logger import get_logger
+try:
+    from shared_tools.utils.logger import get_logger
+except ImportError:
+    from utils.logger import get_logger
 
 
 class ToastHandler:

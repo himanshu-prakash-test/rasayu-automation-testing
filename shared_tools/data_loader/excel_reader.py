@@ -1,11 +1,22 @@
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 import openpyxl
 
-from utils.env_config import config
-from test_data.data_models import TestDataRecord, TestCaseRecord
+try:
+    from shared_tools.utils.env_config import config
+except ImportError:
+    from utils.env_config import config
+
+try:
+    from shared_tools.data_loader.data_models import TestDataRecord, TestCaseRecord
+except ImportError:
+    try:
+        from data_loader.data_models import TestDataRecord, TestCaseRecord
+    except ImportError:
+        from test_data.data_models import TestDataRecord, TestCaseRecord
 
 CURRENT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = CURRENT_DIR.parent.parent
@@ -14,26 +25,39 @@ ROOT_DIR = CURRENT_DIR.parent.parent
 def _find_excel_file(base_name: str) -> Path:
     """
     Dynamically searches for an Excel workbook by base name,
-    supporting standard names and numbered copies across project roots.
+    supporting standard names and numbered copies across project roots,
+    prioritizing numbered versions (e.g. (2) over base) and recently modified files.
     """
+    if isinstance(base_name, Path):
+        base_name = base_name.stem
+    elif isinstance(base_name, str) and ("/" in base_name or "\\" in base_name):
+        base_name = Path(base_name).stem
+    base_name = re.sub(r"\.xlsx$", "", str(base_name), flags=re.I)
+    clean_stem = re.sub(r"\s*\(\d+\)$", "", base_name)
+
     candidate_dirs = [
+        ROOT_DIR / "test_data",
         CURRENT_DIR,
         ROOT_DIR / "shared-tools" / "test_data",
         ROOT_DIR,
     ]
 
+    all_matches = []
     for c_dir in candidate_dirs:
         if not c_dir.exists():
             continue
-        exact = c_dir / f"{base_name}.xlsx"
-        if exact.exists():
-            return exact
-        numbered = c_dir / f"{base_name} (1).xlsx"
-        if numbered.exists():
-            return numbered
-        for f in c_dir.glob(f"{base_name}*.xlsx"):
+        for f in c_dir.glob(f"{clean_stem}*.xlsx"):
             if not f.name.startswith("~$"):
-                return f
+                all_matches.append(f)
+
+    if all_matches:
+        def sort_key(p: Path):
+            match = re.search(r"\((\d+)\)", p.stem)
+            version_num = int(match.group(1)) if match else 0
+            return (version_num, p.stat().st_mtime)
+
+        all_matches.sort(key=sort_key, reverse=True)
+        return all_matches[0]
 
     return CURRENT_DIR / f"{base_name}.xlsx"
 
@@ -45,7 +69,7 @@ CASES_EXCEL_PATH = _find_excel_file("Rasayu_Test_Cases")
 def parse_payload(payload: str) -> Dict[str, str]:
     """
     Universal test data payload parser.
-    Splits pipe-separated tokens ('Key: Value | Key2: Value2') into a dictionary.
+    Splits pipe-separated or newline-separated tokens ('Key: Value | Key2: Value2' or multiline) into a dictionary.
     Generically handles:
       - Environment placeholders ([FROM_ENV:...]) and dynamic credentials
       - Nested parenthesized attributes: 'Parent (K1: V1, K2: V2)' -> K1, K2
@@ -66,11 +90,9 @@ def parse_payload(payload: str) -> Dict[str, str]:
         payload
         .replace("[FROM_ENV:ADMIN_USERNAME]", config.admin_username)
         .replace("[FROM_ENV:ADMIN_PASSWORD]", config.admin_password)
-        .replace("admin_rac@rasayu.com", config.admin_username)
-        .replace("SecureRac@2026!", config.admin_password)
     )
 
-    parts = resolved.split("|")
+    parts = [p.strip() for p in re.split(r"[\r\n|]+", resolved) if p.strip()]
     for part in parts:
         if ":" in part:
             k, v = part.split(":", 1)
@@ -129,6 +151,7 @@ def parse_payload(payload: str) -> Dict[str, str]:
     return result
 
 
+@lru_cache(maxsize=32)
 def get_all_sheet_names(file_name: str = "Rasayu_Test_Data") -> List[str]:
     """Returns a list of all sheet names available in the specified Excel file."""
     excel_file = _find_excel_file(file_name)
@@ -138,6 +161,7 @@ def get_all_sheet_names(file_name: str = "Rasayu_Test_Data") -> List[str]:
     return wb.sheetnames
 
 
+@lru_cache(maxsize=128)
 def get_test_data(sheet_name: str, file_name: str = "Rasayu_Test_Data") -> List[TestDataRecord]:
     """
     Loads all test data rows from the specified sheet in the given Excel workbook.
@@ -168,10 +192,12 @@ def get_test_data(sheet_name: str, file_name: str = "Rasayu_Test_Data") -> List[
         or col_map.get("Module", 2)
     )
     scenario_col = col_map.get("Test Scenario", 3)
+    active_col = col_map.get("Active Record Input")
+    inactive_col = col_map.get("Inactive Record Input")
     payload_col = (
         col_map.get("Specific Test Data Payload / Input Values")
         if "Specific Test Data Payload / Input Values" in col_map
-        else col_map.get("Specific Test Data Payload / Input Value", 4)
+        else col_map.get("Specific Test Data Payload / Input Value")
     )
     outcome_col = col_map.get("Expected Validation Outcome", 5)
 
@@ -181,8 +207,46 @@ def get_test_data(sheet_name: str, file_name: str = "Rasayu_Test_Data") -> List[
         if not tc_id or tc_id.lower() == "test case id":
             continue
 
-        raw_payload = str(row[payload_col].value or "").strip() if payload_col < len(row) else ""
+        active_val = (
+            str(row[active_col].value or "").strip()
+            if active_col is not None and active_col < len(row) and row[active_col].value is not None
+            else ""
+        )
+        inactive_val = (
+            str(row[inactive_col].value or "").strip()
+            if inactive_col is not None and inactive_col < len(row) and row[inactive_col].value is not None
+            else ""
+        )
+
+        if payload_col is not None and payload_col in col_map.values() and payload_col < len(row):
+            raw_payload = str(row[payload_col].value or "").strip()
+        elif active_val or inactive_val:
+            raw_payload = f"Active: {active_val} | Inactive: {inactive_val}"
+        else:
+            raw_payload = ""
+
         parsed = parse_payload(raw_payload)
+
+        # Enhance parsed payload for master active/inactive inputs
+        if active_val:
+            parsed["Active"] = active_val
+            if "(Parent:" in active_val:
+                parent_match = re.search(r"\(Parent:\s*([^)]+)\)\s*(.*)", active_val)
+                if parent_match:
+                    parsed["Parent"] = parent_match.group(1).strip()
+                    parsed["Active Name"] = parent_match.group(2).strip()
+            else:
+                parsed["Active Name"] = active_val
+
+        if inactive_val:
+            parsed["Inactive"] = inactive_val
+            if "(Parent:" in inactive_val:
+                parent_match = re.search(r"\(Parent:\s*([^)]+)\)\s*(.*)", inactive_val)
+                if parent_match:
+                    parsed["Parent"] = parent_match.group(1).strip()
+                    parsed["Inactive Name"] = parent_match.group(2).strip()
+            else:
+                parsed["Inactive Name"] = inactive_val
 
         record = TestDataRecord(
             test_case_id=tc_id,
@@ -190,8 +254,10 @@ def get_test_data(sheet_name: str, file_name: str = "Rasayu_Test_Data") -> List[
             clinical_module=str(row[module_col].value or "").strip(),
             test_scenario=str(row[scenario_col].value or "").strip(),
             raw_payload=raw_payload,
-            expected_outcome=str(row[outcome_col].value or "").strip(),
+            expected_outcome=str(row[outcome_col].value or "").strip() if outcome_col < len(row) else "",
             parsed_payload=parsed,
+            active_record_input=active_val,
+            inactive_record_input=inactive_val,
         )
         records.append(record)
 
@@ -208,11 +274,9 @@ def get_test_data_by_id(
     If `sheet_name` is provided, searches that sheet first.
     If not found (or if `sheet_name` is None), searches across all other sheets in the workbook.
     """
-    excel_file = _find_excel_file(file_name)
-    wb = openpyxl.load_workbook(excel_file, read_only=True)
-
-    sheets_to_search = [sheet_name] if sheet_name and sheet_name in wb.sheetnames else []
-    for s in wb.sheetnames:
+    available_sheets = get_all_sheet_names(file_name)
+    sheets_to_search = [sheet_name] if sheet_name and sheet_name in available_sheets else []
+    for s in available_sheets:
         if s not in sheets_to_search:
             sheets_to_search.append(s)
 
@@ -225,9 +289,10 @@ def get_test_data_by_id(
         except Exception:
             continue
 
-    raise KeyError(f"Test case '{test_case_id}' not found in any sheet of {excel_file.name}.")
+    raise KeyError(f"Test case '{test_case_id}' not found in any sheet of {file_name}.")
 
 
+@lru_cache(maxsize=128)
 def get_test_cases(sheet_name: str, file_name: str = "Rasayu_Test_Cases") -> List[TestCaseRecord]:
     """
     Loads all test case definitions from the specified sheet in the given Excel workbook.

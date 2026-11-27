@@ -6,7 +6,7 @@ Enterprise-grade, human-engineered UI test automation framework built with **Pyt
 
 ## Architecture & Directory Structure
 
-The framework is organized into modular directories ensuring strict separation of concerns, zero hardcoding, and complete portability across local machines and CI/CD servers.
+The framework is organized into decoupled, modular directories ensuring strict separation of concerns, zero hardcoding, and complete portability across local machines and CI/CD servers.
 
 ```
 rasayu-automation-testing/
@@ -15,7 +15,7 @@ rasayu-automation-testing/
 │   ├── auth/                         # Authentication & generic login page object
 │   ├── base/                         # Base page with resilient Playwright interactions
 │   ├── components/                   # Universal UI components (Admin navigation, tables)
-│   ├── popup/                        # Toast alerts, modals, and confirmation dialogues
+│   ├── popup/                        # Toast alerts, modals, summary dialogs, and confirmation popups
 │   ├── reporter/                     # Enterprise HTML reporter with Coreco branding & KPI cards
 │   ├── test_data/                    # Universal Excel test data reader & pydantic data models
 │   │   ├── Rasayu_Test_Cases.xlsx
@@ -25,6 +25,11 @@ rasayu-automation-testing/
 ├── master-management/                # Master Data Management Modules
 │   ├── RAC/                          # Rasayu Cancer Clinic Masters
 │   │   ├── create/
+│   │   │   └── baseline-module/      # Disease at Baseline Master Create Module
+│   │   │       ├── master_pages/     # MasterBasePage and RacBaselineMasterPage
+│   │   │       ├── tests/            # 52 Automated Master Test Cases (TC-01 to TC-52)
+│   │   │       ├── master_baseline_data.py # Module data adapter reading 'master-rac-createbaseline'
+│   │   │       └── README.md         # Master baseline module documentation
 │   │   └── update/
 │   └── DWC/                          # Doctor Wellness Clinic Masters
 │       ├── create/
@@ -58,7 +63,7 @@ rasayu-automation-testing/
    - Use `--headed` flag when visual interaction or debugging is desired.
 3. **Automated Evidence & Screenshot Lifecycle**:
    - Automatically takes a full-page screenshot upon completion of every test case.
-   - Named strictly by official Test Case ID (e.g. `TC-BASE-POS-01.png`).
+   - Named strictly by official Test Case ID (e.g. `TC-BASE-POS-01.png`, `TC-MASTER-BASE-RAC-02.png`).
    - Saved to the `screenshots/` directory and attached directly to the HTML test report.
    - **Vanish on Session Start**: The `screenshots/` directory is automatically wiped clean when starting a new automation test run.
    - **100-File FIFO Limit**: Retains at most 100 screenshots; older files are automatically purged based on modification time.
@@ -67,6 +72,16 @@ rasayu-automation-testing/
    - Automatically shows a native UI summary popup at test completion allowing the user to view or launch the HTML report (gracefully suppresses without error on headless Linux/Docker environments without a display server).
 5. **Decoupled Common Architecture**:
    - `shared-tools/` contains zero medical terms or module-specific logic, allowing seamless scaling to any future clinic or transaction module.
+
+---
+
+## Test Inventory & Coverage (89 Automated Test Cases)
+
+| Module | Scope | Tests | Key Features Covered |
+|---|---|:---:|---|
+| **Transaction Management**<br>`update/baseline-module` | Baseline Visit CRF | **37** | Admin Authentication, Patient Directory, Demographics, Allergies, Allopathy & Ayurvedic Diagnosis, Comorbidities, Family History, Medicines & Chemo, Chief Complaints, Vitals & ECOG, TNM Staging, Surgical & Radiation History, Lab Tests, Hetu Sevan, Clinical Prognosis, RAC Protocol, Physician Opinion, Form Submission + 14 Boundary/Negative validations. |
+| **Master Management**<br>`RAC/create/baseline-module` | Disease at Baseline Masters | **52** | Admin Auth & Nav, Marital Status, Consanguineous, Allergy Type/Reason, Disease Group/Type/Subtype/Stage/Grading, Ayurvedic Nidan, Avastha, Avayava/Srotas/Dosha/Dhatu/Upadhatu/Mala Drushti, Agni/Oja Vikriti, Therapy/Treatment Response, Subjective Prognosis, Comorbidities & Complications, Surgeries & Outcomes, Lineage & Family History, Obstetrics/Delivery, Medicine Forms/Generics/Brands/Units/Frequencies/Side Effects, Chemo & Radiation Regimens, ADR, Cycle Details, Symptoms Types. |
+| **Total Automated Coverage** | | **89** | **100% Automated Test Case Catalog** |
 
 ---
 
@@ -112,42 +127,21 @@ DEFAULT_CLINIC=RAC
 ## Test Execution Commands
 
 ```powershell
-# 1. Run all tests across the framework (Headless by default)
+# 1. Run all 89 tests across the entire framework (Headless by default)
 pytest
 
 # 2. Run all tests in Headed mode (opens visible browser)
 pytest --headed
 
-# 3. Run only the Baseline Visit Module
+# 3. Run only the RAC Master Baseline Module (52 tests)
+pytest master-management/RAC/create/baseline-module/
+
+# 4. Run only the Transaction Baseline Visit Module (37 tests)
 pytest transaction-management/update/baseline-module/
 
-# 4. Run Baseline Positive test suite (23 tests)
-pytest transaction-management/update/baseline-module/tests/test_baseline_positive.py
+# 5. Run a single specific master test case by ID
+pytest master-management/RAC/create/baseline-module/ -k "TC-MASTER-BASE-RAC-02"
 
-# 5. Run Baseline Negative test suite (14 tests)
-pytest transaction-management/update/baseline-module/tests/test_baseline_negative.py
-
-# 6. Run a single specific test case by ID
-pytest transaction-management/update/baseline-module/ -k "TC-BASE-POS-01"
-
-# 7. Collect tests without executing
+# 6. Collect all tests across the framework without executing
 pytest --collect-only
 ```
-
----
-
-## Test Coverage Matrix for Baseline Visit
-
-| Category | File | Count | Scope |
-|---|---|---|---|
-| **Positive Tests** | `test_baseline_positive.py` | 23 | Authentication, Patient Directory search, Demographics, Allergies, Allopathy & Ayurvedic Diagnosis, Comorbidities, Family History, Medicines & Chemo, Chief Complaints, Vitals & ECOG, TNM Staging, Surgical & Radiation History, Lab Tests, Hetu Sevan, Clinical Prognosis, RAC Protocol, Physician Opinion, Form Submission. |
-| **Negative Tests** | `test_baseline_negative.py` | 14 | Invalid login authentication, XSS script injection, future year validation, missing mandatory Ayurvedic parameters, incomplete family history, chronological date inversions, out-of-range ECOG status, negative vitals/dosage, zero fraction radiation, unauthorized RAC finalization, unsupported file upload (`.exe`), premature finalization, blank doctor opinions, mandatory fields validation. |
-| **Total** | | **37** | **100% Automated Coverage** |
-
----
-
-## Reporting & Artifacts
-
-- **HTML Report**: Generated automatically at `pytest-report.html` and inside `reports/`.
-- **Validation Screenshots**: Stored in `screenshots/<TEST_CASE_ID>.png`.
-- **Log Files**: Execution logs saved under `reports/test_run.log`.

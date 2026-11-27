@@ -36,6 +36,8 @@ ENV/
 .coverage
 htmlcov/
 pytest-report.html
+**/pytest-report.html
+*report*.html
 reports/
 
 # Playwright artifacts
