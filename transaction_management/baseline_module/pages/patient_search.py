@@ -1,6 +1,9 @@
 from typing import Optional
 from playwright.sync_api import Page, Locator, expect
-from base.base_page import BasePage
+try:
+    from shared_tools.base.base_page import BasePage
+except ImportError:
+    from base.base_page import BasePage
 
 
 class PatientSearchSection(BasePage):
@@ -11,31 +14,45 @@ class PatientSearchSection(BasePage):
 
     @property
     def search_input(self) -> Locator:
-        return self.page.locator("#searchbar, input[name='q'], input[type='search']")
+        return self.page.locator(
+            "input[placeholder*='Search by name or ID'], #searchbar, input[name='q'], input[type='search']"
+        ).first
 
     @property
     def search_button(self) -> Locator:
-        return self.page.locator("input[type='submit'][value*='Search'], button:has-text('Search'), #searchbar + input")
+        return self.page.locator("input[type='submit'][value*='Search'], button:has-text('Search'), #searchbar + input").first
 
     def search_patient(self, query: str) -> None:
         """Enters search term into the directory searchbar and submits."""
         self.logger.info(f"Searching for patient: '{query}'")
         self.safe_fill(self.search_input, query, "Patient Searchbar")
         self.search_input.press("Enter")
-        self.wait_for_ready()
+        self.page.wait_for_timeout(1000)
 
     def verify_search_result_contains(self, patient_identifier: str) -> None:
         """Asserts that the result table contains the given patient record."""
         self.logger.info(f"Verifying search results contain: '{patient_identifier}'")
-        row = self.page.locator(f"table tbody tr:has-text('{patient_identifier}')")
+        row = self.page.locator(
+            f"tr.ant-table-row:has-text('{patient_identifier}'), table tbody tr:has-text('{patient_identifier}')"
+        )
         expect(row.first).to_be_visible(timeout=10000)
 
     def open_patient_record(self, patient_identifier: str) -> None:
-        """Opens the matching patient change form."""
+        """Opens the matching patient change form or clinical workspace."""
         self.logger.info(f"Opening patient record for '{patient_identifier}'")
-        link = self.page.locator(f"table tbody tr:has-text('{patient_identifier}') a").first
-        self.safe_click(link, f"Patient Record ({patient_identifier})")
-        self.wait_for_ready()
+        row = self.page.locator(
+            f"tr.ant-table-row:has-text('{patient_identifier}'), table tbody tr:has-text('{patient_identifier}')"
+        ).first
+        expect(row).to_be_visible(timeout=10000)
+        self.safe_click(row, f"Patient Record ({patient_identifier})")
+
+        # Wait for patient clinical workspace to load and skeleton placeholders to detach
+        self.logger.info(f"Waiting for patient workspace ({patient_identifier}) to fully render...")
+        try:
+            self.page.wait_for_selector(".ant-skeleton, .ant-spin-spinning", state="detached", timeout=25000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(1000)
 
     def verify_demographics(
         self,
@@ -46,9 +63,10 @@ class PatientSearchSection(BasePage):
     ) -> None:
         """Verifies clinical demographic header values."""
         self.logger.info("Verifying demographic panel details")
+        self.page.wait_for_timeout(1000)
         body_text = self.page.locator("body").inner_text()
         if age:
-            assert age in body_text, f"Expected age '{age}' not found in body text"
+            assert age.lower() in body_text.lower(), f"Expected age '{age}' not found in body text"
         if clinic:
             assert clinic.lower() in body_text.lower(), f"Expected clinic '{clinic}' not found"
         if physician:
