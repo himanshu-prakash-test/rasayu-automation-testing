@@ -15,7 +15,10 @@ from typing import Dict, List, Optional
 
 import jinja2
 
-from utils.env_config import config
+try:
+    from shared_tools.utils.env_config import config
+except ImportError:
+    from utils.env_config import config
 from .models import SessionSummary, TestCaseResult
 from .template import REPORT_HTML_TEMPLATE
 

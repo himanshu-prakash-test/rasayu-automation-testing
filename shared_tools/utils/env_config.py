@@ -30,6 +30,9 @@ class EnvironmentConfig:
     viewport_width: int
     viewport_height: int
     auto_open_report: bool
+    main_app_url: str
+    default_patient_id: str
+    default_patient_name: str
 
 
 def load_env() -> EnvironmentConfig:
@@ -42,6 +45,9 @@ def load_env() -> EnvironmentConfig:
     viewport_width = int(os.getenv("VIEWPORT_WIDTH", "1920"))
     viewport_height = int(os.getenv("VIEWPORT_HEIGHT", "1080"))
     auto_open_report = os.getenv("AUTO_OPEN_REPORT", "false").lower() in ("true", "1", "yes")
+    main_app_url = os.getenv("MAIN_APP_URL", "https://rasayu-stg.corecotechnologies.com/").rstrip("/")
+    default_patient_id = os.getenv("DEFAULT_PATIENT_ID", "")
+    default_patient_name = os.getenv("DEFAULT_PATIENT_NAME", "")
 
     if not admin_username or not admin_password:
         raise ValueError(
@@ -59,6 +65,9 @@ def load_env() -> EnvironmentConfig:
         viewport_width=viewport_width,
         viewport_height=viewport_height,
         auto_open_report=auto_open_report,
+        main_app_url=main_app_url,
+        default_patient_id=default_patient_id,
+        default_patient_name=default_patient_name,
     )
 
 

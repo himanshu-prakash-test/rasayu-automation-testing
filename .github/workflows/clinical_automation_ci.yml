@@ -1,0 +1,125 @@
+name: Rasayu Clinical Automation CI/CD
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      test_target:
+        description: 'Test module or directory to execute'
+        required: true
+        default: 'transaction_management/baseline_module/tests'
+        type: choice
+        options:
+          - 'transaction_management/baseline_module/tests'
+          - 'transaction_management/baseline_module/tests/create'
+          - 'transaction_management/baseline_module/tests/read'
+          - 'transaction_management/baseline_module/tests/update'
+          - 'transaction_management/baseline_module/tests/delete'
+          - 'master_management'
+          - 'all'
+      marker:
+        description: 'Pytest marker expression (e.g. baseline, smoke, positive, negative)'
+        required: false
+        default: 'baseline'
+        type: string
+      browser:
+        description: 'Browser engine to run'
+        required: false
+        default: 'chromium'
+        type: choice
+        options:
+          - 'chromium'
+          - 'firefox'
+          - 'webkit'
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  test:
+    name: Execute Playwright Automation Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CI: 'true'
+      HEADLESS: 'true'
+      BASE_URL: ${{ secrets.BASE_URL || 'http://54.169.232.62/admin/' }}
+      MAIN_APP_URL: ${{ secrets.MAIN_APP_URL || 'https://rasayu-stg.corecotechnologies.com/' }}
+      ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME || 'ADMIN' }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD || 'your_secure_password_here' }}
+      DEFAULT_CLINIC: 'RAC'
+      BROWSER_TIMEOUT: '30000'
+      VIEWPORT_WIDTH: '1920'
+      VIEWPORT_HEIGHT: '1080'
+      AUTO_OPEN_REPORT: 'false'
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Browsers & System Dependencies
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Create Reports & Screenshots Directories
+        run: |
+          mkdir -p reports screenshots
+
+      - name: Execute Automated Test Suite
+        id: run_tests
+        run: |
+          TARGET="${{ github.event.inputs.test_target || 'transaction_management/baseline_module/tests' }}"
+          if [ "$TARGET" = "all" ]; then
+            TARGET="transaction_management master_management"
+          fi
+
+          MARKER_ARG=""
+          if [ -n "${{ github.event.inputs.marker }}" ]; then
+            MARKER_ARG="-m ${{ github.event.inputs.marker }}"
+          fi
+
+          echo "Running command: pytest $TARGET $MARKER_ARG --headless"
+          python -m pytest $TARGET $MARKER_ARG --headless
+        continue-on-error: true
+
+      - name: Publish Test Report Artifacts (HTML & JUnit XML)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rasayu-test-reports-${{ github.run_number }}
+          path: |
+            reports/
+            screenshots/
+          retention-days: 30
+
+      - name: Test Summary Markdown Notice
+        if: always()
+        run: |
+          echo "### 🧪 Rasayu Clinical Automation Test Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target:** \`${{ github.event.inputs.test_target || 'transaction_management/baseline_module/tests' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** \`${{ steps.run_tests.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Reports and full-page screenshots are available in the workflow artifacts." >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail Job if Tests Failed
+        if: steps.run_tests.outcome != 'success'
+        run: |
+          echo "Automated test cases failed or had errors. See reports and artifacts for details."
+          exit 1

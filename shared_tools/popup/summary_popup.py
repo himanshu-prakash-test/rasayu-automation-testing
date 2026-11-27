@@ -6,6 +6,10 @@ from typing import List, Optional
 
 def _is_remote_ci() -> bool:
     """Check if execution is happening in a headless remote CI/CD runner or production server."""
+    # On local Windows workstations with active desktop GUI, allow popup unless inside remote GitHub Actions
+    if sys.platform == "win32" and not os.environ.get("GITHUB_ACTIONS"):
+        return False
+
     ci_val = os.environ.get("CI", "").strip().lower()
     if ci_val in ("true", "1", "yes"):
         return True
@@ -314,15 +318,24 @@ def show_summary_popup(
         except Exception:
             pass
 
-        # Optional timeout support with a safe default of 15 seconds so automated/unattended runs don't hang
-        timeout_env = os.environ.get("RASAYU_POPUP_TIMEOUT") or os.environ.get("POPUP_TIMEOUT") or os.environ.get("SWARAJYA_POPUP_TIMEOUT")
+        # Auto-dismiss timeout: uses RASAYU_POPUP_TIMEOUT if provided, otherwise a generous 60-second window
+        # so the user has ample time to review KPIs and click 'View HTML Report' while preventing indefinite runner hangs.
+        timeout_env = os.environ.get("RASAYU_POPUP_TIMEOUT") or os.environ.get("POPUP_TIMEOUT")
         if timeout_env and timeout_env.isdigit():
             t_sec = int(timeout_env)
             if t_sec > 0:
                 root.after(t_sec * 1000, root.destroy)
         else:
-            root.after(15000, root.destroy)
+            root.after(60000, root.destroy)
 
-        root.mainloop()
+        try:
+            root.mainloop()
+        except (KeyboardInterrupt, SystemExit):
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    except (KeyboardInterrupt, SystemExit):
+        pass
     except Exception as exc:
-        print(f"[POPUP] Could not display execution popup: {exc}")
+        print(f"[POPUP] Execution popup encountered notice: {exc}")

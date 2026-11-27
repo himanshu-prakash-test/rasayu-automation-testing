@@ -4,7 +4,10 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional
 from playwright.sync_api import Page
-from utils.logger import get_logger
+try:
+    from shared_tools.utils.logger import get_logger
+except ImportError:
+    from utils.logger import get_logger
 
 logger = get_logger("ScreenshotManager")
 
@@ -134,6 +137,21 @@ def capture_test_screenshot(
             filename = f"{tc_id}.png"
 
         screenshot_path = screenshots_dir / filename
+
+        # Ensure page DOM is ready and any loading shimmers/skeletons have settled
+        try:
+            page.wait_for_selector(
+                ".ant-skeleton, .ant-spin-spinning, .spinner-border, .loading-indicator",
+                state="detached",
+                timeout=15000,
+            )
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=2000)
+        except Exception:
+            pass
+        page.wait_for_timeout(600)
 
         # Capture full page screenshot
         page.screenshot(path=str(screenshot_path), full_page=True)

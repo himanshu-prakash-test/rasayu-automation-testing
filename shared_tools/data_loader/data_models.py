@@ -11,6 +11,8 @@ class TestDataRecord:
     raw_payload: str
     expected_outcome: str
     parsed_payload: Dict[str, str] = field(default_factory=dict)
+    active_record_input: Optional[str] = ""
+    inactive_record_input: Optional[str] = ""
 
 
 @dataclass
